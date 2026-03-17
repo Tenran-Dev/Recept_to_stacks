@@ -238,21 +238,62 @@
         }
 
         /**
-         * 2. ビデオフレームから画像をキャプチャする処理
-         * 現在の動画フレームをCanvasに描画し、Data URL (Base64) 形式で取得します。
+         * 2. ビデオフレームから画像をキャプチャし、OCR用に前処理（グレースケール・2値化）する処理
          */
         function captureFrame() {
-            // video要素の実際の動画サイズにCanvasを合わせる
-            canvasElement.width = videoElement.videoWidth;
-            canvasElement.height = videoElement.videoHeight;
+            // OCRの精度を上げるために解像度を少し上げる（スケールアップ）
+            const scale = 1.5;
+            canvasElement.width = videoElement.videoWidth * scale;
+            canvasElement.height = videoElement.videoHeight * scale;
 
-            // Canvasのコンテキストを取得し、videoの現在のフレームを描画
             const ctx = canvasElement.getContext('2d');
+            
+            // ぼやけ防止のための設定
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+
+            // videoの現在のフレームを描画（拡大して描画）
             ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
 
+            // 描画した画像データを取得（ピクセル操作用）
+            const imageDataInfo = ctx.getImageData(0, 0, canvasElement.width, canvasElement.height);
+            const data = imageDataInfo.data;
+
+            // コントラスト調整の係数（1.0〜3.0程度）
+            const contrast = 1.5;
+            const intercept = 128 * (1 - contrast);
+
+            // ピクセルごとにグレースケール化とコントラスト/輝度調整（軽量な2値化風）処理
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+
+                // 人間の眼の特性に合わせたグレースケール化
+                let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+
+                // コントラスト強調
+                gray = gray * contrast + intercept;
+
+                // 白黒をはっきりさせるための簡易閾値処理（オプション）
+                // gray = gray > 140 ? 255 : 0; 
+
+                // 範囲を0〜255に収める
+                if(gray > 255) gray = 255;
+                if(gray < 0) gray = 0;
+
+                data[i] = gray;     // R
+                data[i + 1] = gray; // G
+                data[i + 2] = gray; // B
+                // data[i + 3] (Alpha) はそのまま
+            }
+
+            // 処理した画像データをCanvasに戻す
+            ctx.putImageData(imageDataInfo, 0, 0);
+
             // 描画した画像をBase64形式で取得（OCR用の画像データ）
-            // jpeg形式で圧縮して取得（容量削減のため）
-            return canvasElement.toDataURL('image/jpeg', 0.8);
+            // jpeg形式で高品質に圧縮
+            return canvasElement.toDataURL('image/jpeg', 0.95);
         }
 
         /**
