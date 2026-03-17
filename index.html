@@ -162,8 +162,13 @@
             <div class="progress-bar-fill" id="progress-bar-fill"></div>
         </div>
 
-        <!-- キャプチャ＆OCR実行ボタン -->
-        <button id="scan-btn" disabled>レシートをスキャン</button>
+        <div style="display: flex; gap: 8px;">
+            <!-- キャプチャ＆OCR実行ボタン -->
+            <button id="scan-btn" disabled style="flex: 1;">カメラでスキャン</button>
+            <button id="upload-btn" style="flex: 1; background-color: #2196F3;">画像を選択</button>
+        </div>
+        <!-- 隠しファイルインプット -->
+        <input type="file" id="file-input" accept="image/*" style="display: none;">
 
         <!-- キャプチャ画像表示エリア -->
         <div class="result-container" id="captured-image-container" style="display: none;">
@@ -205,6 +210,8 @@
         const canvasElement = document.getElementById('capture-canvas');
         const scanBtn = document.getElementById('scan-btn');
         const sendGasBtn = document.getElementById('send-gas-btn');
+        const uploadBtn = document.getElementById('upload-btn');
+        const fileInput = document.getElementById('file-input');
         const resultTextArea = document.getElementById('ocr-result');
         const statusMessage = document.getElementById('status-message');
         const progressBar = document.getElementById('progress-bar');
@@ -383,6 +390,107 @@
                 setStatus('OCR処理でエラーが発生しました。');
                 alert('文字認識に失敗しました。');
             }
+        });
+
+        /**
+         * 「画像を選択」ボタンのクリック処理（PC用/ファイルアップロード用）
+         */
+        uploadBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        /**
+         * ファイルが選択されたときの処理
+         */
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // FileReaderで画像を読み込む
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = async () => {
+                    try {
+                        setStatus('画像を読み込みました。OCR処理を開始します...');
+                        
+                        // 画像をCanvasに描画して前処理を行うために一時的にvideoのサイズをフェイク
+                        // ※captureFrame関数を再利用するためのハック
+                        const originalVideoWidth = videoElement.videoWidth;
+                        const originalVideoHeight = videoElement.videoHeight;
+                        
+                        Object.defineProperty(videoElement, 'videoWidth', { value: img.width, configurable: true });
+                        Object.defineProperty(videoElement, 'videoHeight', { value: img.height, configurable: true });
+
+                        // Canvasに直接描画
+                        const scale = 1.0; // アップロードファイルは既に高解像度の可能性が高いためスケールは等倍
+                        canvasElement.width = img.width * scale;
+                        canvasElement.height = img.height * scale;
+                        const ctx = canvasElement.getContext('2d');
+                        ctx.drawImage(img, 0, 0, canvasElement.width, canvasElement.height);
+
+                        // 前処理（グレースケール・コントラスト）
+                        const imageDataInfo = ctx.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                        const data = imageDataInfo.data;
+                        const contrast = 1.8;
+                        const intercept = 128 * (1 - contrast);
+
+                        for (let i = 0; i < data.length; i += 4) {
+                            let gray = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+                            gray = gray * contrast + intercept;
+                            if (gray > 160) {
+                                gray = 255;
+                            } else {
+                                gray = gray * 0.5;
+                            }
+                            if(gray > 255) gray = 255;
+                            if(gray < 0) gray = 0;
+                            data[i] = gray;
+                            data[i+1] = gray;
+                            data[i+2] = gray;
+                        }
+                        ctx.putImageData(imageDataInfo, 0, 0);
+
+                        // 処理済み画像を取得
+                        const processedImageData = canvasElement.toDataURL('image/jpeg', 0.95);
+
+                        // プロパティを元に戻す
+                        if (originalVideoWidth) {
+                            Object.defineProperty(videoElement, 'videoWidth', { value: originalVideoWidth, configurable: true });
+                            Object.defineProperty(videoElement, 'videoHeight', { value: originalVideoHeight, configurable: true });
+                        }
+
+                        // UIにプレビュー表示
+                        const imgPreview = document.getElementById('captured-image-preview');
+                        const imgContainer = document.getElementById('captured-image-container');
+                        imgPreview.src = processedImageData;
+                        imgContainer.style.display = 'flex';
+
+                        // OCR処理の実行
+                        const extractedText = await performOCR(processedImageData);
+
+                        // 結果の表示
+                        resultTextArea.value = extractedText;
+                        
+                        if (extractedText.trim() !== '') {
+                            setStatus('テキストの抽出が完了しました。必要なテキストを編集できます。');
+                            sendGasBtn.disabled = false;
+                        } else {
+                            setStatus('テキストを読み取れませんでした。もう一度お試しください。');
+                            sendGasBtn.disabled = true;
+                        }
+
+                    } catch (error) {
+                        setStatus('OCR処理でエラーが発生しました。');
+                        alert('文字認識に失敗しました。');
+                    } finally {
+                        // 次回同じファイルを選べるようにクリア
+                        fileInput.value = '';
+                    }
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
         });
 
         /**
