@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>レシートスキャナーPWA プロトタイプ</title>
+    <!-- Tesseract.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #4CAF50;
+            --primary-dark: #388E3C;
+            --bg-color: #f5f5f5;
+            --text-color: #333;
+            --border-radius: 8px;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 16px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            text-align: center;
+            margin-top: 0;
+            margin-bottom: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+            background: white;
+            padding: 20px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-sizing: border-box;
+        }
+
+        /* ビデオ要素のコンテナ（アスペクト比を維持しつつレスポンシブに） */
+        .video-container {
+            width: 100%;
+            position: relative;
+            background: #000;
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 300px;
+        }
+
+        #camera-preview {
+            width: 100%;
+            height: auto;
+            display: block;
+            object-fit: cover;
+        }
+
+        /* 隠しCanvas要素（画像切り出し用） */
+        #capture-canvas {
+            display: none;
+        }
+
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            width: 100%;
+            transition: background-color 0.2s;
+        }
+
+        button:active {
+            background-color: var(--primary-dark);
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .result-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        label {
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: var(--border-radius);
+            font-family: monospace;
+            font-size: 0.9rem;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        #status-message {
+            font-size: 0.9rem;
+            text-align: center;
+            color: #666;
+            min-height: 1.2em;
+        }
+
+        /* プログレスバー */
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background-color: #eee;
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background-color: var(--primary-color);
+            width: 0%;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>レシートスキャナー</h1>
+
+        <!-- カメラプレビュー -->
+        <div class="video-container">
+            <!-- playsinlineはiOS等でのインライン再生に必要 -->
+            <video id="camera-preview" autoplay playsinline muted></video>
+        </div>
+
+        <!-- 状態表示用メッセージ -->
+        <div id="status-message">カメラを起動しています...</div>
+        
+        <!-- OCR進捗バー -->
+        <div class="progress-bar" id="progress-bar">
+            <div class="progress-bar-fill" id="progress-bar-fill"></div>
+        </div>
+
+        <!-- キャプチャ＆OCR実行ボタン -->
+        <button id="scan-btn" disabled>レシートをスキャン</button>
+
+        <!-- 抽出結果表示エリア -->
+        <div class="result-container">
+            <label for="ocr-result">抽出テキスト:</label>
+            <textarea id="ocr-result" placeholder="ここに読み取ったテキストが表示されます..."></textarea>
+        </div>
+
+        <!-- GAS送信用ボタン -->
+        <!-- GAS_WEB_APP_URL は実際のGASデプロイURLに書き換える想定 -->
+        <button id="send-gas-btn" disabled>GASへ送信</button>
+
+        <!-- 画像処理用隠しキャンバス -->
+        <canvas id="capture-canvas"></canvas>
+    </div>
+
+    <script>
+        /**
+         * アプリケーションのグローバル設定
+         */
+        const CONFIG = {
+            // 日本語の認識モデルを指定（英語も含める場合は 'jpn+eng' などとする）
+            tesseractLang: 'jpn',
+            // 送信先のGAS WebアプリURLを設定（連携時に書き換えてください）
+            gasWebAppUrl: 'YOUR_GAS_WEB_APP_URL_HERE'
+        };
+
+        // DOM要素の取得
+        const videoElement = document.getElementById('camera-preview');
+        const canvasElement = document.getElementById('capture-canvas');
+        const scanBtn = document.getElementById('scan-btn');
+        const sendGasBtn = document.getElementById('send-gas-btn');
+        const resultTextArea = document.getElementById('ocr-result');
+        const statusMessage = document.getElementById('status-message');
+        const progressBar = document.getElementById('progress-bar');
+        const progressBarFill = document.getElementById('progress-bar-fill');
+
+        /**
+         * 1. 背面カメラの起動処理
+         * スマートフォンの背面カメラ（environment）を優先して起動します。
+         */
+        async function startCamera() {
+            try {
+                // getUserMediaでカメラのストリームを取得
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        // 背面カメラを指定 (スマートフォン向け)
+                        facingMode: 'environment'
+                    },
+                    audio: false
+                });
+
+                // video要素にストリームをセットして再生
+                videoElement.srcObject = stream;
+                
+                // メタデータの読み込みが完了したらボタンを有効化
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play();
+                    scanBtn.disabled = false;
+                    setStatus('カメラの準備が完了しました。レシートを写してスキャンしてください。');
+                };
+            } catch (error) {
+                console.error("カメラの起動に失敗しました:", error);
+                setStatus('エラー: カメラにアクセスできません。権限を確認してください。');
+                alert("カメラの起動に失敗しました。\nブラウザの権限設定を確認してください。");
+            }
+        }
+
+        /**
+         * 2. ビデオフレームから画像をキャプチャする処理
+         * 現在の動画フレームをCanvasに描画し、Data URL (Base64) 形式で取得します。
+         */
+        function captureFrame() {
+            // video要素の実際の動画サイズにCanvasを合わせる
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            // Canvasのコンテキストを取得し、videoの現在のフレームを描画
+            const ctx = canvasElement.getContext('2d');
+            ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+
+            // 描画した画像をBase64形式で取得（OCR用の画像データ）
+            // jpeg形式で圧縮して取得（容量削減のため）
+            return canvasElement.toDataURL('image/jpeg', 0.8);
+        }
+
+        /**
+         * 3. Tesseract.jsを用いたOCR（光学文字認識）処理
+         * 画像データからテキストを抽出します。
+         */
+        async function performOCR(imageDataUrl) {
+            scanBtn.disabled = true;
+            progressBar.style.display = 'block';
+            progressBarFill.style.width = '0%';
+            
+            try {
+                // Tesseract.jsの初期化と認識処理
+                // TesseractCDNのワーカーを動的に作成
+                const worker = await Tesseract.createWorker({
+                    logger: m => {
+                        // 進行状況のログ出力（コンソールとUI両方に反映）
+                        console.log(m);
+                        if (m.status === 'recognizing text') {
+                            const progress = Math.round(m.progress * 100);
+                            setStatus(`テキスト認識中... ${progress}%`);
+                            progressBarFill.style.width = `${progress}%`;
+                        } else {
+                            setStatus(`初期化中... (${m.status})`);
+                        }
+                    }
+                });
+                
+                // 言語データの読み込みと初期化
+                await worker.loadLanguage(CONFIG.tesseractLang);
+                await worker.initialize(CONFIG.tesseractLang);
+                
+                // 認識実行
+                setStatus('テキスト解析中...');
+                const { data: { text } } = await worker.recognize(imageDataUrl);
+                
+                // ワーカーの終了処理（メモリ解放）
+                await worker.terminate();
+
+                return text;
+            } catch (error) {
+                console.error("OCR処理中にエラーが発生しました:", error);
+                throw error;
+            } finally {
+                scanBtn.disabled = false;
+                progressBar.style.display = 'none';
+            }
+        }
+
+        /**
+         * 「レシートをスキャン」ボタンのクリックイベントハンドラ
+         */
+        scanBtn.addEventListener('click', async () => {
+            try {
+                // 1. 画像のキャプチャ
+                setStatus('画像をキャプチャしました。OCR処理を開始します...');
+                const imageData = captureFrame();
+
+                // 2. OCR処理の実行
+                const extractedText = await performOCR(imageData);
+
+                // 3. 結果の表示
+                resultTextArea.value = extractedText;
+                
+                if (extractedText.trim() !== '') {
+                    setStatus('テキストの抽出が完了しました。必要なテキストを編集できます。');
+                    // テキストが抽出できたら「GASへ送信」ボタンを有効化
+                    sendGasBtn.disabled = false;
+                } else {
+                    setStatus('テキストを読み取れませんでした。もう一度お試しください。');
+                    sendGasBtn.disabled = true;
+                }
+
+            } catch (error) {
+                setStatus('OCR処理でエラーが発生しました。');
+                alert('文字認識に失敗しました。');
+            }
+        });
+
+        /**
+         * 4. 抽出したテキストをGAS（Google Apps Script）へ送信する処理
+         */
+        sendGasBtn.addEventListener('click', async () => {
+            const textToSend = resultTextArea.value;
+            
+            if (!textToSend.trim()) {
+                alert('送信するテキストがありません。');
+                return;
+            }
+
+            // 送信ボタンを一時的に無効化し、多重送信を防止
+            sendGasBtn.disabled = true;
+            setStatus('GASへ送信中...');
+
+            // 送信するJSONデータの構築
+            const payload = {
+                text: textToSend,
+                timestamp: new Date().toISOString()
+            };
+
+            try {
+                /*
+                 * 外部へのPOST送信(GASへ)
+                 * GASにおけるCORS（Cross-Origin Resource Sharing）回避のための工夫:
+                 * GASのWebアプリで doPost を受け取る際、'application/json' だとプリフライト(OPTIONSリクエスト)
+                 * が発生し、CORSエラーになりやすいです。
+                 * 対策として 'text/plain' で送信し、GAS側で JSON.parse(e.postData.contents) します。
+                 */
+                const response = await fetch(CONFIG.gasWebAppUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain', 
+                    },
+                    // オブジェクトをJSON文字列に変換して送信
+                    body: JSON.stringify(payload) 
+                });
+
+                // GASのWebアプリの仕様や fetch の状態によって確認
+                // redirect (HTMLを返す場合など) や opaque (no-cors) も考慮
+                if (response.ok || response.type === 'opaque') {
+                    setStatus('GASへの送信が完了しました！');
+                    alert('送信成功しました！');
+                } else {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+            } catch (error) {
+                console.error('送信エラー:', error);
+                setStatus('GASへの送信に失敗しました。');
+                alert('送信に失敗しました。\n・URLがGAS側でデプロイされた正しいものか\n・GASで「全員」がアクセス可能になっているか\nを確認してください。\n詳細: ' + error.message);
+            } finally {
+                // 送信処理完了後、ボタンを再度有効化
+                sendGasBtn.disabled = false;
+            }
+        });
+
+        /**
+         * ステータスメッセージを更新するヘルパー関数
+         * @param {string} msg 表示するメッセージ
+         */
+        function setStatus(msg) {
+            statusMessage.textContent = msg;
+        }
+
+        // 初期化処理: ページ読み込み完了時にカメラを起動
+        window.addEventListener('DOMContentLoaded', () => {
+            // パスワードやカメラ等を使うAPIはHTTPSまたはlocalhostでのみ動作します
+            if (window.isSecureContext) {
+                startCamera();
+            } else {
+                setStatus('エラー: 安全なコンテキスト(HTTPS/localhost)ではありません。');
+                alert("セキュリティの理由により、カメラアクセスにはHTTPS接続またはlocalhostでの実行が必要です。");
+            }
+        });
+
+    </script>
+</body>
+</html>
