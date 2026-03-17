@@ -173,7 +173,10 @@
 
         <!-- 抽出結果表示エリア -->
         <div class="result-container">
-            <label for="ocr-result">抽出テキスト:</label>
+            <label for="ocr-result">抽出テキスト (誤字はそのままでOK):</label>
+            <p style="font-size: 0.8rem; color: #666; margin-top: 0; margin-bottom: 4px;">
+                ※「死」が「ﾀﾋ」になる等のOCR特有の誤字は、後続のGAS側（Gemini AI）が文脈から自動補正するため、ある程度アバウトな抽出文字列でも問題ありません。
+            </p>
             <textarea id="ocr-result" placeholder="ここに読み取ったテキストが表示されます..."></textarea>
         </div>
 
@@ -190,7 +193,8 @@
          * アプリケーションのグローバル設定
          */
         const CONFIG = {
-            // 日本語の認識モデルを指定（英語も含める場合は 'jpn+eng' などとする）
+            // 日本語の認識に特化するため、jpnを設定
+            // 領収書の縦横混在やかすれに対応するため、英語(eng)も混ぜると精度が上がることがあります。
             tesseractLang: 'jpn',
             // 送信先のGAS WebアプリURLを設定（連携時に書き換えてください）
             gasWebAppUrl: 'YOUR_GAS_WEB_APP_URL_HERE'
@@ -259,8 +263,8 @@
             const imageDataInfo = ctx.getImageData(0, 0, canvasElement.width, canvasElement.height);
             const data = imageDataInfo.data;
 
-            // コントラスト調整の係数（1.0〜3.0程度）
-            const contrast = 1.5;
+            // はっきりとした黒文字を残すためのコントラスト調整の係数
+            const contrast = 1.8; // コントラストを少し強める
             const intercept = 128 * (1 - contrast);
 
             // ピクセルごとにグレースケール化とコントラスト/輝度調整（軽量な2値化風）処理
@@ -275,8 +279,14 @@
                 // コントラスト強調
                 gray = gray * contrast + intercept;
 
-                // 白黒をはっきりさせるための簡易閾値処理（オプション）
-                // gray = gray > 140 ? 255 : 0; 
+                // 明るすぎる部分（白飛び）を完全に白(255)にし、
+                // ある程度暗い部分（文字のカスレ等）は黒(0)に近づける2値化寄りの処理
+                // 「死」のような複雑な漢字が「ﾀﾋ」に分離しないように線を太らせる効果を狙う
+                if (gray > 160) {
+                    gray = 255;
+                } else {
+                    gray = gray * 0.5; // 黒をより濃くする
+                }
 
                 // 範囲を0〜255に収める
                 if(gray > 255) gray = 255;
