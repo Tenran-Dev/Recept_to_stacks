@@ -165,6 +165,12 @@
         <!-- キャプチャ＆OCR実行ボタン -->
         <button id="scan-btn" disabled>レシートをスキャン</button>
 
+        <!-- キャプチャ画像表示エリア -->
+        <div class="result-container" id="captured-image-container" style="display: none;">
+            <label>キャプチャ画像確認:</label>
+            <img id="captured-image-preview" alt="キャプチャ画像" style="width: 100%; height: auto; border-radius: var(--border-radius); border: 1px solid #ccc;">
+        </div>
+
         <!-- 抽出結果表示エリア -->
         <div class="result-container">
             <label for="ocr-result">抽出テキスト:</label>
@@ -259,9 +265,9 @@
             progressBarFill.style.width = '0%';
             
             try {
-                // Tesseract.jsの初期化と認識処理
-                // TesseractCDNのワーカーを動的に作成
-                const worker = await Tesseract.createWorker({
+                setStatus('OCRエンジンを準備しています...');
+                // Tesseract.js v5の推奨される初期化方法
+                const worker = await Tesseract.createWorker(CONFIG.tesseractLang, 1, {
                     logger: m => {
                         // 進行状況のログ出力（コンソールとUI両方に反映）
                         console.log(m);
@@ -270,14 +276,10 @@
                             setStatus(`テキスト認識中... ${progress}%`);
                             progressBarFill.style.width = `${progress}%`;
                         } else {
-                            setStatus(`初期化中... (${m.status})`);
+                            setStatus(`準備中... (${m.status})`);
                         }
                     }
                 });
-                
-                // 言語データの読み込みと初期化
-                await worker.loadLanguage(CONFIG.tesseractLang);
-                await worker.initialize(CONFIG.tesseractLang);
                 
                 // 認識実行
                 setStatus('テキスト解析中...');
@@ -304,6 +306,12 @@
                 // 1. 画像のキャプチャ
                 setStatus('画像をキャプチャしました。OCR処理を開始します...');
                 const imageData = captureFrame();
+
+                // キャプチャした画像をUIに表示する（正常に取得できているか確認できるように）
+                const imgPreview = document.getElementById('captured-image-preview');
+                const imgContainer = document.getElementById('captured-image-container');
+                imgPreview.src = imageData;
+                imgContainer.style.display = 'flex';
 
                 // 2. OCR処理の実行
                 const extractedText = await performOCR(imageData);
