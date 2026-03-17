@@ -346,7 +346,16 @@
                 // ワーカーの終了処理（メモリ解放）
                 await worker.terminate();
 
-                return text;
+                // テキストのクリーンアップ処理 (OCR特有のノイズ除去)
+                // 1. 意味のない記号の連続などを消去
+                let cleanedText = text
+                    .replace(/[|\-_=+~^]{2,}/g, '') // 横線・縦線の誤認識（バーコードや境界線）を消去
+                    .replace(/[.,:;]{3,}/g, '')     // ゴミ（ホコリの誤認識）を消去
+                    .replace(/^[ \t]+|[ \t]+$/gm, '') // 各行の前後スペースをトリム
+                    .replace(/\n{3,}/g, '\n\n')       // 無駄な空行を詰める
+                    .trim();
+
+                return cleanedText;
             } catch (error) {
                 console.error("OCR処理中にエラーが発生しました:", error);
                 throw error;
