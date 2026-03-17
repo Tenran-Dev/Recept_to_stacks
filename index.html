@@ -533,6 +533,7 @@
                  */
                 const response = await fetch(CONFIG.gasWebAppUrl, {
                     method: 'POST',
+                    mode: 'no-cors', // これを追加することでCORSエラーを無視して強制送信する
                     headers: {
                         'Content-Type': 'text/plain', 
                     },
